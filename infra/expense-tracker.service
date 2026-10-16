@@ -1,0 +1,22 @@
+[Unit]
+Description=Multi-tenant SaaS Expense Tracker (Express API + SPA)
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/expense-tracker/backend
+Environment=NODE_ENV=production
+# MUST match the nginx /expense/ proxy target (127.0.0.1:8090).
+Environment=PORT=8090
+ExecStart=/usr/bin/node dist/index.js
+# App reads secrets from backend/.env (dotenv) + DATABASE_URL/redis from container hosts.
+Restart=always
+RestartSec=5
+# Give time for postgres+redis containers to be up when docker starts.
+ExecStartPre=/bin/sleep 3
+
+[Install]
+WantedBy=multi-user.target

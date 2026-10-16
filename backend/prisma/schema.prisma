@@ -1,0 +1,230 @@
+// Multi-tenant SaaS Expense Tracker — schema
+// Doc: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  super_admin
+  org_owner
+  org_admin
+  member
+}
+
+enum PlanCode {
+  free
+  starter
+  pro
+}
+
+enum GitProvider {
+  github
+  gitlab
+  bitbucket
+}
+
+enum StorageMode {
+  normal
+  no_storage
+}
+
+enum SubscriptionStatus {
+  active
+  trialing
+  past_due
+  canceled
+  incomplete
+}
+
+/// Managed by the Super Admin portal. Source of truth for plan definitions.
+model subscription_plans {
+  id               String    @id @default(uuid()) @db.Uuid
+  plan_code        PlanCode  @unique
+  name             String
+  description      String?
+  monthly_price    Decimal   @db.Decimal(10, 2)
+  receipt_limit    Int
+  stripe_price_id  String?
+  stripe_product_id String?
+  is_active        Boolean   @default(true)
+  is_custom        Boolean   @default(false)
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  organizations organizations[]
+  @@map("subscription_plans")
+}
+
+/// Operational cost engine — admins update vendor costs to compute per-receipt margin.
+model cost_metrics {
+  id                String  @id @default(uuid()) @db.Uuid
+  ocr_cost_per_unit Decimal @default(0) @db.Decimal(10, 6)
+  email_cost_per_unit Decimal @default(0) @db.Decimal(10, 6)
+  storage_cost_per_gb Decimal @default(0) @db.Decimal(10, 6)
+  scraper_cost_per_run Decimal @default(0) @db.Decimal(10, 6)
+  updated_by        String? @db.Uuid
+  updatedByUser     user?   @relation(fields: [updated_by], references: [id])
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@map("cost_metrics")
+}
+
+model organizations {
+  id                     String   @id @default(uuid()) @db.Uuid
+  name                   String
+  plan_id                String?  @db.Uuid
+  plan                   subscription_plans? @relation(fields: [plan_id], references: [id])
+  receipt_limit_override Int?
+  stripe_customer_id     String?
+  stripe_subscription_id String?
+  subscription_status    SubscriptionStatus @default(active)
+  current_period_start   DateTime?
+  current_period_end     DateTime?
+  grandfathered_price    Decimal? @db.Decimal(10, 2)
+  createdAt              DateTime @default(now()) @map("created_at")
+
+  users         user[]
+  usage         monthly_usage[]
+  gitIntegrations git_integrations[]
+  receipts      receipts[]
+  auditLogs     audit_logs[]
+  @@map("organizations")
+}
+
+model git_integrations {
+  id                 String      @id @default(uuid()) @db.Uuid
+  org_id             String      @db.Uuid
+  org                organizations @relation(fields: [org_id], references: [id])
+  provider           GitProvider
+  repository_owner   String
+  repository_name    String
+  branch             String      @default("main")
+  access_token_encrypted String
+  auto_sync_csv      Boolean     @default(false)
+  auto_sync_json     Boolean     @default(false)
+  createdAt          DateTime    @default(now()) @map("created_at")
+
+  @@map("git_integrations")
+  @@index([org_id])
+}
+
+model monthly_usage {
+  id                 String   @id @default(uuid()) @db.Uuid
+  org_id             String   @db.Uuid
+  org                organizations @relation(fields: [org_id], references: [id])
+  billing_period_start DateTime
+  billing_period_end   DateTime
+  receipts_processed Int      @default(0)
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  @@map("monthly_usage")
+  @@index([org_id])
+  @@unique([org_id, billing_period_start])
+}
+
+model user {
+  id           String   @id @default(uuid()) @db.Uuid
+  org_id       String?  @db.Uuid
+  org          organizations? @relation(fields: [org_id], references: [id])
+  name         String
+  email        String   @unique
+  password_hash String
+  role         Role     @default(member)
+  tenant_api_key String? @unique // per-tenant API key for n8n OCR webhook ingestion
+  is_active    Boolean  @default(true)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  receipts    receipts[]
+  auditLogs   audit_logs[]
+  costMetricsEdits cost_metrics[]
+  password_resets password_resets[]
+  @@map("users")
+}
+
+model receipts {
+  id           String   @id @default(uuid()) @db.Uuid
+  org_id       String   @db.Uuid
+  org          organizations @relation(fields: [org_id], references: [id])
+  user_id      String?  @db.Uuid
+  user         user?    @relation(fields: [user_id], references: [id])
+  store_name   String?
+  date         DateTime?
+  time         String?
+  total        Decimal?  @db.Decimal(10, 2)
+  subtotal     Decimal?  @db.Decimal(10, 2)
+  tax          Decimal?  @db.Decimal(10, 2)
+  payment_method String?
+  storage_mode StorageMode @default(normal)
+  file_path    String?
+  drive_file_id String?
+  drive_web_link String?
+  git_commit_sha String?
+  raw_ocr_json Json?
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  items    receipt_items[]
+  @@map("receipts")
+  @@index([org_id])
+  @@index([user_id])
+}
+
+model receipt_items {
+  id        String  @id @default(uuid()) @db.Uuid
+  receipt_id String @db.Uuid
+  receipt   receipts @relation(fields: [receipt_id], references: [id])
+  name      String
+  quantity  Decimal? @default(1) @db.Decimal(10, 2)
+  price     Decimal? @db.Decimal(10, 2)
+
+  priceSuggestions price_suggestions[]
+  @@map("receipt_items")
+  @@index([receipt_id])
+}
+
+model price_suggestions {
+  id             String  @id @default(uuid()) @db.Uuid
+  receipt_item_id String @db.Uuid
+  receipt_item   receipt_items @relation(fields: [receipt_item_id], references: [id])
+  competitor_name String
+  competitor_price Decimal @db.Decimal(10, 2)
+  url            String?
+  scraped_at     DateTime @default(now()) @map("scraped_at")
+
+  @@map("price_suggestions")
+  @@index([receipt_item_id])
+}
+
+model audit_logs {
+  id        String   @id @default(uuid()) @db.Uuid
+  org_id    String   @db.Uuid
+  org       organizations @relation(fields: [org_id], references: [id])
+  user_id   String?  @db.Uuid
+  user      user?    @relation(fields: [user_id], references: [id])
+  action    String
+  ip_address String?
+  details   Json?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("audit_logs")
+  @@index([org_id])
+}
+
+model password_resets {
+  id        String   @id @default(uuid()) @db.Uuid
+  user_id   String   @db.Uuid
+  user      user     @relation(fields: [user_id], references: [id])
+  token_hash String
+  expires_at DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([user_id])
+  @@map("password_resets")
+}

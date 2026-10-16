@@ -1,0 +1,55 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: expense-postgres
+    environment:
+      POSTGRES_USER: expense
+      POSTGRES_PASSWORD: expense_dev_pw
+      POSTGRES_DB: expense_tracker
+    ports:
+      - "5438:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U expense -d expense_tracker"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: expense-redis
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: expense-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://expense:expense_dev_pw@postgres:5432/expense_tracker
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: change-me-in-prod
+      PORT: "8080"
+    ports:
+      # 8080 is taken on this host by an existing service -> expose API on 8082
+      - "8082:8080"
+    volumes:
+      - ./backend/prisma:/app/prisma
+    command: sh -c "npx prisma migrate deploy && node dist/index.js"
+
+volumes:
+  pgdata:
